@@ -1,0 +1,61 @@
+name: Remux preview APK release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to create
+        required: true
+        default: remux-preview-1
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      APP_VARIANT: preview
+      NODE_ENV: production
+      EXPO_PUBLIC_OPENSUBSONIC_API_VERSION: "1.16.1"
+      EXPO_PUBLIC_CLIENT_NAME: wavio
+      EXPO_PUBLIC_ENV: preview
+      EXPO_PUBLIC_DISTRIBUTION: github
+      EXPO_NO_TELEMETRY: "1"
+      SENTRY_DISABLE_AUTO_UPLOAD: "true"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+      - run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
+      - run: bun install --frozen-lockfile
+      - run: bun run mobile:prebuild:preview
+      - name: Build APK
+        working-directory: apps/mobile/android
+        run: ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a --console=plain
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          apk="wavio-remux-preview-$(node -p "require('./apps/mobile/package.json').version")-arm64.apk"
+          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk "$apk"
+          sha256sum "$apk" > "$apk.sha256"
+          gh release create "$TAG" "$apk" "$apk.sha256" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Wavio Preview with Remux streaming ($TAG)" \
+            --notes "Wavio Preview (com.jmercier.wavio.preview) built from $GITHUB_SHA with Remux streaming support. arm64-v8a, signed with the debug key; installs alongside the regular Wavio. Last.fm and Taddy podcast search are not configured in this build."
