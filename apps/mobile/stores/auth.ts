@@ -106,6 +106,9 @@ export type JellyfinSession = {
   accessToken: string;
   userId: string;
   isAdmin: boolean;
+  // Set when the server is Remux (a Jellyfin-API reimplementation), which needs
+  // its own stream URLs — see services/jellyfin/streaming.ts.
+  remuxVersion?: string | null;
 };
 
 export type LoginOptions = {
@@ -144,6 +147,7 @@ type AuthStore = {
   hasNavidromeNative: boolean;
   jellyfinAccessToken: string | null;
   jellyfinUserId: string | null;
+  jellyfinRemuxVersion: string | null;
   serverVersion: string | null;
   subsonicSalt: string | null;
   subsonicToken: string | null;
@@ -155,6 +159,7 @@ type AuthStore = {
   setActiveUrl: (url: string) => void;
   setNavidromeSession: (session: NavidromeNativeSession | null) => void;
   setJellyfinSession: (session: JellyfinSession | null) => void;
+  setJellyfinRemuxVersion: (version: string | null) => void;
   setServerType: (type: ServerType) => void;
   setToken: (token: string) => void;
   setPassword: (password: string) => void;
@@ -177,6 +182,7 @@ export const useAuthBase = create<AuthStore>()(
       hasNavidromeNative: false,
       jellyfinAccessToken: null,
       jellyfinUserId: null,
+      jellyfinRemuxVersion: null,
       serverVersion: null,
       subsonicSalt: null,
       subsonicToken: null,
@@ -204,6 +210,7 @@ export const useAuthBase = create<AuthStore>()(
           hasNavidromeNative: !!navidrome,
           jellyfinAccessToken: jellyfin?.accessToken ?? null,
           jellyfinUserId: jellyfin?.userId ?? null,
+          jellyfinRemuxVersion: jellyfin?.remuxVersion ?? null,
           subsonicSalt: options.subsonicSalt ?? null,
           subsonicToken: options.subsonicToken ?? null,
           useTokenAuth: options.useTokenAuth ?? true,
@@ -230,6 +237,9 @@ export const useAuthBase = create<AuthStore>()(
           userId: session?.userId ?? null,
           isAdmin: session?.isAdmin ?? false,
         });
+      },
+      setJellyfinRemuxVersion: (version: string | null) => {
+        set({ jellyfinRemuxVersion: version });
       },
       setServerType: (type: ServerType) => {
         set({ serverType: type });
@@ -265,6 +275,7 @@ export const useAuthBase = create<AuthStore>()(
           hasNavidromeNative: false,
           jellyfinAccessToken: null,
           jellyfinUserId: null,
+          jellyfinRemuxVersion: null,
           serverVersion: null,
           subsonicSalt: null,
           subsonicToken: null,

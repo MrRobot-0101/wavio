@@ -10,15 +10,19 @@ import type {
 import { useAuthBase } from "@/stores/auth";
 
 export const ping = async (opts?: { signal?: AbortSignal }) => {
-  const rsp = await jellyfinApiInstance.get<{ Version?: string }>(
-    "/System/Info",
-    { signal: opts?.signal },
-  );
-  if (rsp.data?.Version) {
-    const current = useAuthBase.getState().serverVersion;
-    if (current !== rsp.data.Version) {
-      useAuthBase.getState().setServerVersion(rsp.data.Version);
-    }
+  const rsp = await jellyfinApiInstance.get<{
+    Version?: string;
+    RemuxVersion?: string;
+  }>("/System/Info", { signal: opts?.signal });
+  const auth = useAuthBase.getState();
+  if (rsp.data?.Version && auth.serverVersion !== rsp.data.Version) {
+    auth.setServerVersion(rsp.data.Version);
+  }
+  // Re-read on every ping so a session saved before Remux detection existed, or
+  // a URL now answered by a different server, picks the right stream URLs.
+  const remuxVersion = rsp.data?.RemuxVersion ?? null;
+  if (auth.jellyfinRemuxVersion !== remuxVersion) {
+    auth.setJellyfinRemuxVersion(remuxVersion);
   }
   return fakeEnvelope({});
 };

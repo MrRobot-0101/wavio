@@ -21,7 +21,10 @@ jest.mock("@/services/network", () => ({
     netState.isCellular && cellularFormat !== "same" ? cellularFormat : format,
 }));
 
-const authState = { serverType: "jellyfin" };
+const authState = {
+  serverType: "jellyfin",
+  jellyfinRemuxVersion: null as string | null,
+};
 jest.mock("@/stores/auth", () => ({
   useAuthBase: {
     getState: () => ({
@@ -32,6 +35,7 @@ jest.mock("@/stores/auth", () => ({
       subsonicToken: "tok",
       jellyfinAccessToken: "token",
       jellyfinUserId: "user",
+      jellyfinRemuxVersion: authState.jellyfinRemuxVersion,
     }),
   },
 }));
@@ -51,6 +55,7 @@ import {
   downloadUrl,
   hlsStreamUrl,
   offlineStreamUrl,
+  offlineTranscodeSuffix,
   streamUrl,
   willDirectPlay,
 } from "@/services/jellyfin/streaming";
@@ -189,5 +194,95 @@ describe("query-string auth", () => {
     const url = build();
     expect(url).toContain("ApiKey=token");
     expect(url).not.toContain("api_key=");
+  });
+});
+
+describe("Remux", () => {
+  beforeEach(() => {
+    authState.serverType = "jellyfin";
+    authState.jellyfinRemuxVersion = "0.19.0";
+    appState.streamingFormat = "raw";
+    appState.cellularStreamingFormat = "same";
+    appState.maxBitRate = null;
+    appState.cellularMaxBitRate = null;
+    netState.isCellular = false;
+  });
+
+  afterAll(() => {
+    authState.jellyfinRemuxVersion = null;
+  });
+
+  // Remux's universal endpoint always answers with a redirect to an HLS
+  // playlist, which the progressive player can't open.
+  it("never streams through the universal endpoint", () => {
+    expect(streamUrl("1")).not.toContain("/universal");
+    appState.streamingFormat = "opus";
+    expect(streamUrl("1")).not.toContain("/universal");
+  });
+
+  it("serves the untouched source for uncapped raw playback", () => {
+    expect(streamUrl("1")).toBe(
+      "http://server/Audio/1/stream?Static=true&ApiKey=token&DeviceId=device&Client=Wavio",
+    );
+    expect(willDirectPlay(track({}), "raw")).toBe(true);
+    expect(trackTranscodeInfo(track({ suffix: "flac" })).active).toBe(false);
+  });
+
+  it("transcodes a chosen format into Matroska", () => {
+    appState.streamingFormat = "opus";
+    const url = streamUrl("1");
+    expect(url).toContain("/Audio/1/stream.mkv?");
+    expect(url).toContain("Container=mkv");
+    expect(url).toContain("AudioCodec=opus");
+    expect(url).not.toContain("Static=true");
+    expect(willDirectPlay(track({ suffix: "opus" }), "opus")).toBe(false);
+  });
+
+  it("transcodes raw playback to AAC at the bitrate cap", () => {
+    appState.maxBitRate = 128;
+    const url = streamUrl("1");
+    expect(url).toContain("AudioCodec=aac");
+    expect(url).toContain("AudioBitRate=128000");
+    // The URL transcodes whatever the source bitrate, so the prediction (which
+    // decides between a native seek and a StartTimeTicks reload) must agree.
+    const info = trackTranscodeInfo(track({ suffix: "mp3", bitRate: 96 }));
+    expect(info.active).toBe(true);
+    expect(info.toLabel).toBe("AAC");
+  });
+
+  it("follows the cellular settings on cellular", () => {
+    appState.cellularStreamingFormat = "mp3";
+    appState.cellularMaxBitRate = 96;
+    netState.isCellular = true;
+    const url = streamUrl("1");
+    expect(url).toContain("AudioCodec=mp3");
+    expect(url).toContain("AudioBitRate=96000");
+  });
+
+  it("seeks within a transcode with StartTimeTicks", () => {
+    appState.streamingFormat = "aac";
+    expect(streamUrl("1", { timeOffset: 12.5 })).toContain(
+      "StartTimeTicks=125000000",
+    );
+  });
+
+  it("falls back to an opus transcode after a decode error", () => {
+    const url = streamUrl("1", { forceTranscode: true });
+    expect(url).toContain("/stream.mkv?");
+    expect(url).toContain("AudioCodec=opus");
+  });
+
+  it("saves offline transcodes as Matroska audio", () => {
+    const url = offlineStreamUrl("1", "mp3", 192);
+    expect(url).toContain("/Audio/1/stream.mkv?");
+    expect(url).toContain("AudioCodec=mp3");
+    expect(url).toContain("AudioBitRate=192000");
+    expect(offlineTranscodeSuffix("mp3")).toBe("mka");
+    expect(offlineTranscodeSuffix("opus")).toBe("mka");
+  });
+
+  it("keeps the shared download and HLS routes Remux implements", () => {
+    expect(downloadUrl("1")).toContain("/Items/1/Download?ApiKey=token");
+    expect(hlsStreamUrl("1")).toContain("/Audio/1/universal?ApiKey=token");
   });
 });

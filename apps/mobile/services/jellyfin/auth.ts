@@ -42,10 +42,13 @@ export type JellyfinSystemInfo = {
   Version: string;
   Id: string;
   OperatingSystem?: string;
+  // Only present on Remux, which otherwise reports itself as Jellyfin.
+  RemuxVersion?: string;
 };
 
 export const getSystemInfo = async (
   url: string,
+  extraHeaders?: Record<string, string>,
 ): Promise<JellyfinSystemInfo> => {
   const baseURL = url.replace(/\/+$/, "");
   const rsp = await axios
@@ -53,6 +56,7 @@ export const getSystemInfo = async (
       baseURL,
       headers: {
         "Content-Type": "application/json",
+        ...extraHeaders,
         Authorization: buildAuthorizationHeader(null),
       },
     })

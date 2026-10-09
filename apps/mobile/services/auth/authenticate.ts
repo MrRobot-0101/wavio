@@ -15,7 +15,10 @@ import {
   splitDomainUser,
 } from "@/services/fileSource/smbAddress";
 import { isMultistatus } from "@/services/fileSource/webdavMultistatus";
-import { authenticateByName as jellyfinAuthenticate } from "@/services/jellyfin/auth";
+import {
+  getSystemInfo as getJellyfinSystemInfo,
+  authenticateByName as jellyfinAuthenticate,
+} from "@/services/jellyfin/auth";
 import { nativeLogin } from "@/services/navidrome/auth";
 import { openSubsonicErrorCodes } from "@/services/openSubsonic";
 import {
@@ -42,6 +45,7 @@ export type RemoteLoginOptions = {
     accessToken: string;
     userId: string;
     isAdmin: boolean;
+    remuxVersion?: string | null;
   } | null;
   subsonicSalt?: string | null;
   subsonicToken?: string | null;
@@ -265,6 +269,12 @@ export async function authenticateRemote(
     // "no HTTP response came back", which a 401 fails but an InvalidCredentials-
     // Error would pass — turning every mistyped password into a TLS round trip
     // and, on a self-signed host, into a bogus "certificate not trusted".
+    // Best-effort: a server whose public info can't be read is treated as plain
+    // Jellyfin here, and the next reachability ping (services/jellyfin/system.ts)
+    // corrects it.
+    const systemInfo = getJellyfinSystemInfo(trimmedUrl, headers).catch(
+      () => null,
+    );
     const payload = await withSslDetection(trimmedUrl, () =>
       jellyfinAuthenticate(
         trimmedUrl,
@@ -286,6 +296,7 @@ export async function authenticateRemote(
         accessToken: payload.AccessToken,
         userId: payload.User.Id,
         isAdmin: !!payload.User.Policy?.IsAdministrator,
+        remuxVersion: (await systemInfo)?.RemuxVersion ?? null,
       },
     };
   }

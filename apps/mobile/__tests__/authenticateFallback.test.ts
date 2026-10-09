@@ -13,6 +13,7 @@ jest.mock("@/services/backend/probe", () => ({
 }));
 jest.mock("@/services/jellyfin/auth", () => ({
   authenticateByName: (...args: unknown[]) => mockJellyfinAuth(...args),
+  getSystemInfo: (...args: unknown[]) => mockJellyfinSystemInfo(...args),
 }));
 jest.mock("@/services/navidrome/auth", () => ({ nativeLogin: jest.fn() }));
 jest.mock("@/services/openSubsonic", () => ({
@@ -27,6 +28,7 @@ jest.mock("@/services/openSubsonic/auth", () => ({
 }));
 
 const mockJellyfinAuth = jest.fn();
+const mockJellyfinSystemInfo = jest.fn();
 const mockPingGet = jest.fn();
 
 import axios from "axios";
@@ -64,7 +66,28 @@ const run = () =>
 
 beforeEach(() => {
   mockJellyfinAuth.mockReset();
+  mockJellyfinSystemInfo.mockReset();
+  mockJellyfinSystemInfo.mockResolvedValue({ Version: "10.11.0" });
   mockPingGet.mockReset();
+});
+
+describe("Remux detection", () => {
+  it("records the Remux version a Jellyfin login reports", async () => {
+    mockJellyfinAuth.mockResolvedValue(ok);
+    mockJellyfinSystemInfo.mockResolvedValue({
+      Version: "10.11.8",
+      RemuxVersion: "0.19.0",
+    });
+    const result = await run();
+    expect(result.options.jellyfin?.remuxVersion).toBe("0.19.0");
+  });
+
+  it("treats plain Jellyfin, or unreadable public info, as not Remux", async () => {
+    mockJellyfinAuth.mockResolvedValue(ok);
+    expect((await run()).options.jellyfin?.remuxVersion).toBeNull();
+    mockJellyfinSystemInfo.mockRejectedValue(unreachable());
+    expect((await run()).options.jellyfin?.remuxVersion).toBeNull();
+  });
 });
 
 describe("authenticateWithFallback", () => {

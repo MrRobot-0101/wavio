@@ -70,6 +70,52 @@ function formatProfile(format: StreamFormat): {
   }
 }
 
+// Remux (github.com/lostb1t/remux) speaks the Jellyfin API, but its
+// /Audio/{id}/universal ignores the negotiation params and always redirects to
+// an HLS master playlist, which the progressive player can't open. Its
+// /Audio/{id}/stream is used instead: Static=true serves the untouched source
+// (byte ranges included, so it seeks natively), anything else pipes an ffmpeg
+// transcode honouring AudioCodec, AudioBitRate and StartTimeTicks. Remux only
+// muxes ts/webm/mkv/mp4 there, and Matroska is the one that carries every codec
+// the app asks for (and any cover-art stream ffmpeg copies along).
+const REMUX_TRANSCODE_CONTAINER = "mkv";
+
+export function isRemuxServer(): boolean {
+  return !!useAuthBase.getState().jellyfinRemuxVersion;
+}
+
+// Remux's track metadata can't predict direct play: sources resolve lazily at
+// play time and unprobed ones carry a placeholder codec. So the decision rests
+// on the settings alone — only an uncapped "raw" stream skips the transcode.
+function remuxTranscodes(format: StreamFormat, maxBitRate: number | null) {
+  return format !== "raw" || !!maxBitRate;
+}
+
+function remuxStreamUrl(
+  id: string,
+  format: StreamFormat,
+  maxBitRate: number | null,
+  timeOffset?: number,
+): string {
+  if (!remuxTranscodes(format, maxBitRate)) {
+    return resolveServerBase(
+      `${baseUrl()}/Audio/${id}/stream?Static=true&${authParam()}`,
+    );
+  }
+  const codec = format === "raw" ? JELLYFIN_DEFAULT_TRANSCODE_CODEC : format;
+  const parts = [
+    `Container=${REMUX_TRANSCODE_CONTAINER}`,
+    `AudioCodec=${codec}`,
+  ];
+  if (maxBitRate) parts.push(`AudioBitRate=${maxBitRate * 1000}`);
+  if (timeOffset && timeOffset > 0) {
+    parts.push(`StartTimeTicks=${Math.round(timeOffset * TICKS_PER_SECOND)}`);
+  }
+  return resolveServerBase(
+    `${baseUrl()}/Audio/${id}/stream.${REMUX_TRANSCODE_CONTAINER}?${parts.join("&")}&${authParam()}`,
+  );
+}
+
 // Predicts whether the universal endpoint will direct-play this track under the
 // given format: its container must appear in the profile's accept-list, and a
 // `container|codec` entry additionally requires the codec to match. Mirrors the
@@ -80,6 +126,13 @@ export function willDirectPlay(
   track: QueueTrack,
   format: StreamFormat,
 ): boolean {
+  if (isRemuxServer()) {
+    const { maxBitRate, cellularMaxBitRate } = useAppBase.getState();
+    return !remuxTranscodes(
+      format,
+      getEffectiveMaxBitRate(maxBitRate, cellularMaxBitRate),
+    );
+  }
   const container = track.suffix?.toLowerCase();
   if (!container) return false;
   const codec =
@@ -109,17 +162,26 @@ const TICKS_PER_SECOND = 10_000_000;
 // `timeOffset` (seconds) becomes StartTimeTicks so seeking within a transcoded
 // stream re-requests it from that point (ffmpeg -ss) — the stream is served
 // without a seekable length, so a native seekTo would just restart it.
-function transcodeParams(opts?: StreamOptions): string {
+function effectiveStreamSettings(opts?: StreamOptions): {
+  effective: number | null;
+  format: StreamFormat;
+} {
   const {
     maxBitRate,
     cellularMaxBitRate,
     streamingFormat,
     cellularStreamingFormat,
   } = useAppBase.getState();
-  const effective = getEffectiveMaxBitRate(maxBitRate, cellularMaxBitRate);
-  const format = opts?.forceTranscode
-    ? FALLBACK_TRANSCODE_FORMAT
-    : getEffectiveStreamingFormat(streamingFormat, cellularStreamingFormat);
+  return {
+    effective: getEffectiveMaxBitRate(maxBitRate, cellularMaxBitRate),
+    format: opts?.forceTranscode
+      ? FALLBACK_TRANSCODE_FORMAT
+      : getEffectiveStreamingFormat(streamingFormat, cellularStreamingFormat),
+  };
+}
+
+function transcodeParams(opts?: StreamOptions): string {
+  const { effective, format } = effectiveStreamSettings(opts);
   const { audioCodec, transcodingContainer, containers } =
     formatProfile(format);
   const parts = [
@@ -151,6 +213,10 @@ function authParam(): string {
 }
 
 export function streamUrl(id: string, opts?: StreamOptions): string {
+  if (isRemuxServer()) {
+    const { effective, format } = effectiveStreamSettings(opts);
+    return remuxStreamUrl(id, format, effective, opts?.timeOffset);
+  }
   const userId = useAuthBase.getState().jellyfinUserId ?? "";
   // /Audio/{id}/universal handles direct play / transcode negotiation.
   // resolveServerBase reroutes trusted self-signed hosts through the iOS
@@ -163,6 +229,12 @@ export function streamUrl(id: string, opts?: StreamOptions): string {
 }
 
 export function hlsStreamUrl(id: string, opts?: StreamOptions): string {
+  // Remux has no /Audio/{id}/main.m3u8; its universal endpoint is the HLS one.
+  if (isRemuxServer()) {
+    return resolveServerBase(
+      `${baseUrl()}/Audio/${id}/universal?${authParam()}`,
+    );
+  }
   return resolveServerBase(
     `${baseUrl()}/Audio/${id}/main.m3u8?${authParam()}&${transcodeParams(opts)}`,
   );
@@ -183,6 +255,7 @@ export function offlineStreamUrl(
   format: StreamFormat,
   maxBitRate: number | null,
 ): string {
+  if (isRemuxServer()) return remuxStreamUrl(id, format, maxBitRate);
   const profile = formatProfile(format);
   // aac narrows both to ADTS: the streaming profile's `ts` transcode container
   // and `m4a|aac` direct-play entries would save bytes that don't match a .aac
@@ -208,8 +281,9 @@ export function offlineStreamUrl(
 }
 
 // Extension a Jellyfin offline transcode is saved under (opus lands in an ogg
-// container).
+// container, and every Remux transcode in Matroska).
 export function offlineTranscodeSuffix(format: StreamFormat): string {
+  if (isRemuxServer()) return "mka";
   return format === "opus" ? "ogg" : format;
 }
 
