@@ -1,6 +1,8 @@
 name: Remux preview APK release
 
 on:
+  push:
+    tags: ["remux-preview-*"]
   workflow_dispatch:
     inputs:
       tag:
@@ -49,7 +51,7 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           apk="wavio-remux-preview-$(node -p "require('./apps/mobile/package.json').version")-arm64.apk"
           cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk "$apk"
